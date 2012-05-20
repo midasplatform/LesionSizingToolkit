@@ -1,3 +1,20 @@
+/*=========================================================================
+ *
+ *  Copyright Insight Software Consortium
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *         http://www.apache.org/licenses/LICENSE-2.0.txt
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ *=========================================================================*/
 #ifndef __LesionSegmentationCLI_h
 #define __LesionSegmentationCLI_h
 
@@ -16,12 +33,14 @@
 #if !defined(_MSC_VER)
   #include <dirent.h> // exists only on POSIX type compilers
 #else
-  #include "dirent_win.h" // exists only on POSIX type compilers
+  #include "dirent_win.h" // Windows equivalent
 #endif
 #include <errno.h>
 #include <vector>
 #include <string>
 #include <iostream>
+
+#include "LesionSegmentationConfig.h"
 
 class LesionSegmentationCLI : public MetaCommand
 {
@@ -42,6 +61,10 @@ public:
     this->AddArgument("InputImage",false,"Input image to be segmented.");
     this->AddArgument("InputDICOMDir",false,"DICOM directory containing series of the Input image to be segmented.");
     this->AddArgument("OutputImage", false, "Output segmented image");
+#ifdef LSTK_USE_AIM
+    this->AddArgument("OutputAIM", false, 
+                      "Output segmented image in AIM format");
+#endif
     this->AddArgument("OutputMesh", false, "Output segmented surface (STL filename expected)");
     this->AddArgument("OutputROI", false, "Write the ROI within which the segmentation will be confined to (for debugging purposes)");
     this->AddArgument("Visualize", false, "Visualize the input image and the segmented surface.", MetaCommand::BOOL, "0");

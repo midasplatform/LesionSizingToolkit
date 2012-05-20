@@ -1,3 +1,20 @@
+/*=========================================================================
+ *
+ *  Copyright Insight Software Consortium
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *         http://www.apache.org/licenses/LICENSE-2.0.txt
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ *
+ *=========================================================================*/
 #include "itkImageFileReader.h"
 #include "itkImageFileWriter.h"
 #include "itkGDCMImageIO.h"
@@ -7,6 +24,10 @@
 #include "itkImageSeriesReader.h"
 #include "itkEventObject.h"
 #include "itkImageToVTKImageFilter.h"
+#include "itkMetaImageIOFactory.h"
+
+#include "gdcmUIDGenerator.h"
+
 #include "vtkMassProperties.h"
 #include "vtkImageData.h"
 #include "vtkMarchingCubes.h"
@@ -37,9 +58,51 @@
 #include "itkLesionSegmentationImageFilter8.h"
 #include "itkLesionSegmentationCommandLineProgressReporter.h"
 #include "LesionSegmentationCLI.h"
+#include "LesionSegmentationConfig.h"
+
+#ifdef LSTK_USE_AIM
+  #include "itkImageToAIMXMLFilter.h"
+#endif
 
 #define VTK_CREATE(type, name) \
   vtkSmartPointer<type> name = vtkSmartPointer<type>::New()
+
+// Contants
+const std::string  PatientNameTag = "0010|0010";
+const std::string  PatientIdTag = "0010|0020";
+const std::string  PatientSexTag = "0010|0040";
+const std::string  StudyInstanceUIDTag = "0020|000d";
+const std::string  SeriesInstanceUIDTag = "0020|000e";
+const std::string  SOPClassUIDTag = "0008|0016";
+const std::string  SOPInstanceUIDTag = "0008|0018";
+const std::string  SeriesRestriction = "0008|0021";
+const float        ContourValue = -0.5;
+const unsigned int ImageDimension = LesionSegmentationCLI::ImageDimension;
+
+
+// typdefs
+typedef LesionSegmentationCLI::InputImageType        InputImageType;
+typedef LesionSegmentationCLI::RealImageType         RealImageType;
+typedef itk::ImageFileReader< InputImageType >       InputReaderType;
+typedef itk::ImageFileWriter< RealImageType >        OutputWriterType;
+typedef InputImageType                               ImageType;
+typedef itk::LandmarkSpatialObject< ImageDimension > LandmarkType;
+typedef LandmarkType::PointType                      PointType;
+typedef LandmarkType::PointListType                  PointListType;
+typedef itk::ImageSeriesReader< ImageType >          ReaderType;
+typedef itk::Image< float, ImageDimension >          RealImageType;
+typedef itk::GDCMImageIO                             ImageIOType;
+typedef itk::GDCMSeriesFileNames                     NamesGeneratorType;
+typedef std::vector< std::string >                   SeriesIdContainer;
+typedef std::vector< std::string >                   FileNamesContainer;
+typedef std::vector< std::string >                   UIDStorageVector;
+typedef itk::MetaDataObject< std::string >           MetaDataStringType;
+typedef const MetaDataStringType*                    MetaDataStringConstPointer;
+typedef const itk::MetaDataObjectBase*               MetaDataUncastedPointer;
+
+typedef itk::LesionSegmentationImageFilter8< InputImageType, RealImageType >
+                                                     SegmentationFilterType;
+
 
 // --------------------------------------------------------------------------
 class SwitchVisibilityCallback : public vtkCommand
@@ -68,17 +131,49 @@ protected:
   vtkRenderWindow *RenWin;
 };
 
+// --------------------------------------------------------------------------
+class ImageAndMetaDataContainer
+{
+public:
+  ImageAndMetaDataContainer(std::string pName,
+                            std::string pId,
+                            std::string pSex,
+                            std::string stUID,
+                            std::string seUID,
+                            UIDStorageVector sopClassVect,
+                            UIDStorageVector sopInstanceVect,
+                            InputImageType::Pointer img) :
+    patientName(pName),
+    patientId(pId),
+    patientSex(pSex),
+    studyInstanceUID(stUID),
+    seriesInstanceUID(seUID),
+    sopClassUIDVector(sopClassVect),
+    sopInstanceUIDVector(sopInstanceVect)
+  {
+    image = img;
+    gdcm::UIDGenerator gen;
+    currentUID = std::string(gen.Generate());
+    std::cout << "Creating with UID: " << currentUID << std::endl;
+  }
+  
+  std::string patientName;
+  std::string patientId;
+  std::string patientSex;
+  std::string studyInstanceUID;
+  std::string seriesInstanceUID;
+  std::string currentUID;
+
+  UIDStorageVector sopClassUIDVector;
+  UIDStorageVector sopInstanceUIDVector;
+
+  LesionSegmentationCLI::InputImageType::Pointer image;
+};
 
 // --------------------------------------------------------------------------
-LesionSegmentationCLI::InputImageType::Pointer GetImage( std::string dir, bool ignoreDirection )
+ImageAndMetaDataContainer* GetImageAndMetaData( std::string dir, bool ignoreDirection )
 {
-  const unsigned int Dimension = LesionSegmentationCLI::ImageDimension;
-  typedef itk::Image< LesionSegmentationCLI::PixelType, Dimension >         ImageType;
-
-  typedef itk::ImageSeriesReader< ImageType >        ReaderType;
   ReaderType::Pointer reader = ReaderType::New();
-
-  typedef itk::GDCMImageIO       ImageIOType;
   ImageIOType::Pointer dicomIO = ImageIOType::New();
 
   reader->SetImageIO( dicomIO );
@@ -97,8 +192,6 @@ LesionSegmentationCLI::InputImageType::Pointer GetImage( std::string dir, bool i
     std::cout << "Contains the following DICOM Series: ";
     std::cout << std::endl << std::endl;
 
-    typedef std::vector< std::string >    SeriesIdContainer;
-
     const SeriesIdContainer & seriesUID = nameGenerator->GetSeriesUIDs();
 
     SeriesIdContainer::const_iterator seriesItr = seriesUID.begin();
@@ -109,32 +202,17 @@ LesionSegmentationCLI::InputImageType::Pointer GetImage( std::string dir, bool i
       seriesItr++;
       }
 
-
     std::string seriesIdentifier;
     seriesIdentifier = seriesUID.begin()->c_str();
-
 
     std::cout << std::endl << std::endl;
     std::cout << "Now reading series: " << std::endl << std::endl;
     std::cout << seriesIdentifier << std::endl;
     std::cout << std::endl << std::endl;
 
-
-    typedef std::vector< std::string >   FileNamesContainer;
     FileNamesContainer fileNames;
 
     fileNames = nameGenerator->GetFileNames( seriesIdentifier );
-
-    FileNamesContainer::const_iterator  fitr = fileNames.begin();
-    FileNamesContainer::const_iterator  fend = fileNames.end();
-
-    while( fitr != fend )
-      {
-      std::cout << *fitr << std::endl;
-      ++fitr;
-      }
-
-
     reader->SetFileNames( fileNames );
 
     try
@@ -147,20 +225,74 @@ LesionSegmentationCLI::InputImageType::Pointer GetImage( std::string dir, bool i
       return NULL;
       }
 
+    ReaderType::DictionaryArrayRawPointer dictOfDicts =
+      reader->GetMetaDataDictionaryArray();
+    UIDStorageVector sopClassUIDVector;
+    sopClassUIDVector.reserve(dictOfDicts->size());
+    UIDStorageVector sopInstanceUIDVector;
+    sopInstanceUIDVector.reserve(dictOfDicts->size());
+    ReaderType::DictionaryArrayType::const_iterator itr;
+    for( itr = dictOfDicts->begin(); itr != dictOfDicts->end(); ++itr )
+      {
+      ReaderType::DictionaryRawPointer dict = *itr;
+
+      MetaDataUncastedPointer sopClassUIDBase = dict->Get(SOPClassUIDTag);
+      MetaDataUncastedPointer sopInstanceUIDBase = dict->Get(SOPInstanceUIDTag);
+
+      MetaDataStringConstPointer elClassUID;
+      MetaDataStringConstPointer elInstanceUID;
+      elClassUID = dynamic_cast<MetaDataStringConstPointer>(sopClassUIDBase);
+      elInstanceUID = dynamic_cast<MetaDataStringConstPointer>(sopInstanceUIDBase);
+
+      if( elClassUID )
+        {
+        sopClassUIDVector.push_back(elClassUID->GetMetaDataObjectValue());
+        }
+      if( elInstanceUID )
+        {
+        sopInstanceUIDVector.push_back(elInstanceUID->GetMetaDataObjectValue());
+        }
+      }
+
+    std::string patientName;
+    std::string patientId;
+    std::string patientSex;
+    std::string studyInstanceUID;
+    std::string seriesInstanceUID;
+    
+    dicomIO->GetValueFromTag( PatientNameTag, patientName );
+    dicomIO->GetValueFromTag( PatientIdTag, patientName );
+    dicomIO->GetValueFromTag( PatientSexTag, patientSex );
+    dicomIO->GetValueFromTag( StudyInstanceUIDTag, studyInstanceUID );
+    dicomIO->GetValueFromTag( SeriesInstanceUIDTag, seriesInstanceUID );
+
+    std::cout << "Patient Name: " << patientName << std::endl
+              << "Patient ID: " << patientId << std::endl
+              << "Patient Sex: " << patientSex << std::endl
+              << "Study Instance UID: " << studyInstanceUID << std::endl
+              << "Series Instance UID: " << seriesInstanceUID << std::endl;
 
     ImageType::Pointer image = reader->GetOutput();
     ImageType::DirectionType direction;
     direction.SetIdentity();
     image->DisconnectPipeline();
-    std::cout << "Image Direction:" << image->GetDirection() << std::endl;
-
 
     if (ignoreDirection)
       {
-      std::cout << "Ignoring the direction of the DICOM image and using identity." << std::endl;
+      std::cout << "Ignoring the direction of the DICOM image and using "
+                << "identity." << std::endl;
       image->SetDirection(direction);
       }
-    return image;
+    ImageAndMetaDataContainer* output;
+    output = new ImageAndMetaDataContainer( patientName,
+                                            patientId,
+                                            patientSex,
+                                            studyInstanceUID,
+                                            seriesInstanceUID,
+                                            sopClassUIDVector,
+                                            sopInstanceUIDVector,
+                                            image );
+    return output;
     }
   catch (itk::ExceptionObject &ex)
     {
@@ -371,6 +503,40 @@ int ViewImageAndSegmentationSurface(
   return EXIT_SUCCESS;
 }
 
+#ifdef LSTK_USE_AIM
+void WriteAIM( const std::string& fileName, double contourValue,
+               SegmentationFilterType::Pointer seg,
+               ImageAndMetaDataContainer* data,
+               double volume )
+{
+
+  typedef itk::ImageToAIMXMLFilter<RealImageType, InputImageType >
+    AIMFilterType;
+  std::cout << "Writing the output segmented level set in AIM XML format. "
+            << fileName << ". "
+            << "The segmentation is an isosurface of this image at a "
+            << "value of " << contourValue << "." << std::endl;
+  AIMFilterType::Pointer aimFilter = AIMFilterType::New();
+  aimFilter->SetContourThreshold( contourValue );
+  aimFilter->SetInput( seg->GetOutput() );
+  aimFilter->SetReference( data->image );
+  aimFilter->SetPatientName( data->patientName );
+  aimFilter->SetPatientId( data->patientId );
+  aimFilter->SetPatientSex( data->patientSex );
+  aimFilter->SetStudyInstanceUID( data->studyInstanceUID );
+  aimFilter->SetSeriesInstanceUID( data->seriesInstanceUID );
+  aimFilter->SetCurrentUID( data->currentUID );
+  aimFilter->SetSOPClassUIDs( data->sopClassUIDVector );
+  aimFilter->SetSOPInstanceUIDs( data->sopInstanceUIDVector );
+  aimFilter->SetVolume( volume );
+  aimFilter->Update();
+  
+  std::ofstream aimFile;
+  aimFile.open( fileName.c_str() );
+  aimFile << aimFilter->GetOutput();
+  aimFile.close();
+}
+#endif
 
 // --------------------------------------------------------------------------
 int main( int argc, char * argv[] )
@@ -381,26 +547,19 @@ int main( int argc, char * argv[] )
 
   LesionSegmentationCLI args( argc, argv );
 
-  typedef LesionSegmentationCLI::InputImageType InputImageType;
-  typedef LesionSegmentationCLI::RealImageType  RealImageType;
-  const unsigned int ImageDimension = LesionSegmentationCLI::ImageDimension;
-
-  typedef itk::ImageFileReader< InputImageType > InputReaderType;
-  typedef itk::ImageFileWriter< RealImageType > OutputWriterType;
-  typedef itk::LesionSegmentationImageFilter8< InputImageType, RealImageType > SegmentationFilterType;
-
-
   // Read the volume
   InputReaderType::Pointer reader = InputReaderType::New();
   InputImageType::Pointer image;
+  ImageAndMetaDataContainer* data = NULL;
 
   std::cout << "Reading " << args.GetValueAsString("InputImage") << ".." << std::endl;
   if (!args.GetValueAsString("InputDICOMDir").empty())
     {
     std::cout << "Reading from DICOM dir " << args.GetValueAsString("InputDICOMDir") << ".." << std::endl;
-    image = GetImage(
+    data = GetImageAndMetaData(
       args.GetValueAsString("InputDICOMDir"),
       args.GetValueAsBool("IgnoreDirection"));
+    image = data->image;
 
     if (!image)
       {
@@ -415,7 +574,6 @@ int main( int argc, char * argv[] )
     reader->Update();
     image = reader->GetOutput();
     }
-
 
   //To make sure the tumor polydata aligns with the image volume during
   //vtk rendering in ViewImageAndSegmentationSurface(),
@@ -523,7 +681,6 @@ int main( int argc, char * argv[] )
   seg->SetSigmoidBeta(args.GetValueAsBool("PartSolid") ? -500 : -200 );
   seg->Update();
 
-
   if (!args.GetValueAsString("OutputImage").empty())
     {
     std::cout << "Writing the output segmented level set."
@@ -537,7 +694,6 @@ int main( int argc, char * argv[] )
     }
 
   // Compute volume
-
   typedef itk::ImageToVTKImageFilter< RealImageType > RealITKToVTKFilterType;
   RealITKToVTKFilterType::Pointer itk2vtko = RealITKToVTKFilterType::New();
   itk2vtko->SetInput( seg->GetOutput() );
@@ -552,7 +708,7 @@ int main( int argc, char * argv[] )
   mc->SetInputData(itk2vtko->GetOutput());
 #endif
 
-  mc->SetValue(0,-0.5);
+  mc->SetValue(0, ContourValue);
   mc->Update();
 
   if (mc->GetOutput()->GetNumberOfCells() == 0)
@@ -572,6 +728,14 @@ int main( int argc, char * argv[] )
   const double volume = mp->GetVolume();
 
   std::cout << "Volume of segmentation mm^3 = " << volume << std::endl;
+
+#ifdef LSTK_USE_AIM
+  if (!args.GetValueAsString("OutputAIM").empty())
+    {
+    WriteAIM( args.GetValueAsString("OutputAIM"), ContourValue,
+              seg, data, volume );
+    }
+#endif
 
   if( args.GetOptionWasSet("OutputMesh"))
     {
