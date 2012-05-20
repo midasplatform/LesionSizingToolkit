@@ -55,6 +55,7 @@ public:
 
   LesionSegmentationCLI( int argc, char *argv[] ) : MetaCommand()
   {
+    LocationFileParsed = false;
     m_Image = NULL;
     this->DisableDeprecatedWarnings();
 
@@ -76,6 +77,8 @@ public:
     this->AddArgument("Sigma", false,
       "Manually specify sigma. This is an array with 3 values in physical units. This defaults to the maximum spacing in the dataset, if unspecified",
       MetaCommand::LIST);
+    this->AddArgument("LocationFile", false,
+                      "Specify the seed point and bounding box in a standard locaion csv file. This was developed for use in QIBench");
     this->AddArgument("Seeds", false,
       "Manually specify seeds in physical coordinates. At least one seed must be specified using for a segmentation to be generated. Usage is of the form --Seeds 3 X1 Y1 Z1 (for 1 seed) or --Seeds 6 X1 Y1 Z1 X2 Y2 Z2 (for 2 seeds) etc..",
       MetaCommand::LIST);
@@ -96,9 +99,46 @@ public:
       }
     }
 
+  // Parses the location out of the location file
+  void ParseLocationFile()
+  {
+    if(LocationFileParsed)
+      {
+      return;
+      }
+    std::string locFilename = this->GetValueAsString("LocationFile");
+    std::ifstream locFile(locFilename.c_str());
+    std::string line;
+    std::getline(locFile, line);
+
+    std::stringstream lineStream(line);
+    std::string cell;
+    this->LocationFileSeed = std::list<std::string>();
+    size_t count = 0;
+    while(std::getline(lineStream,cell,','))
+      {
+      if(count >= 5) // The first two values are identifiers
+        {
+        this->ROI[count-5] = atof(cell.c_str());
+        }
+      else if( count >= 2 )
+        {
+        this->LocationFileSeed.push_back(std::string(cell));
+        }
+      ++count;
+      }
+    LocationFileParsed = true;
+  }
+
   double *GetROI()
     {
-    if (this->GetOptionWasSet("ROI"))
+    if( !this->GetValueAsString("LocationFile").empty() )
+      {
+     // Default to be physical units
+     //TO DO: deal with ROI input in pixel units
+      this->ParseLocationFile();
+      }
+    else if (this->GetOptionWasSet("ROI"))
       {
      // Default to be physical units
      //TO DO: deal with ROI input in pixel units
@@ -136,7 +176,16 @@ public:
 
   PointListType GetSeeds()
     {
-    std::list< std::string > seedsString = this->GetValueAsList("Seeds");
+    std::list< std::string > seedsString;
+    if( !this->GetValueAsString("LocationFile").empty() )
+      {
+      this->ParseLocationFile();
+      seedsString = this->LocationFileSeed;
+      }
+    else
+      {
+      seedsString = this->GetValueAsList("Seeds");
+      }
     std::list< std::string >::const_iterator fit = seedsString.begin();
     const unsigned int nb_of_markers = seedsString.size() / 3;
     PointListType seeds(nb_of_markers);
@@ -310,6 +359,8 @@ protected:
 
 
 
+  std::list< std::string > LocationFileSeed;
+  bool LocationFileParsed;
   double ROI[6];
   InputImageType * m_Image;
 };
