@@ -117,11 +117,11 @@ public:
     size_t count = 0;
     while(std::getline(lineStream,cell,','))
       {
-      if(count >= 5) // The first two values are identifiers
+      if(count >= 10) // after the seed point is the bounding box
         {
-        this->ROI[count-5] = atof(cell.c_str());
+        this->ROI[count-10] = atof(cell.c_str());
         }
-      else if( count >= 2 )
+      else if( count >= 7 ) // the first 7 values are identifiers
         {
         this->LocationFileSeed.push_back(std::string(cell));
         }
