@@ -110,6 +110,7 @@ public:
     std::ifstream locFile(locFilename.c_str());
     std::string line;
     std::getline(locFile, line);
+    std::getline(locFile, line);
 
     std::stringstream lineStream(line);
     std::string cell;
